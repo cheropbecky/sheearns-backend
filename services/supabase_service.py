@@ -68,3 +68,16 @@ def update_rows(table: str, *, filters: dict[str, Any], payload: dict[str, Any])
 
 	response = query.execute()
 	return response.data or []
+
+
+def delete_rows(table: str, *, filters: dict[str, Any]) -> list[dict[str, Any]]:
+	client = get_supabase_client()
+	if client is None:
+		return []
+
+	query = client.table(table).delete()
+	for key, value in filters.items():
+		query = query.eq(key, value)
+
+	response = query.execute()
+	return response.data or []

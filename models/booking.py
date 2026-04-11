@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+BookingStatus = Literal["pending", "accepted", "rejected", "completed", "cancelled"]
 
 
 class BookingCreate(BaseModel):
@@ -14,7 +18,15 @@ class BookingRecord(BaseModel):
 	service_id: str
 	customer_user_id: str
 	provider_user_id: str
-	status: str
+	status: BookingStatus
 	amount: int = Field(..., ge=0)
 	message: str | None = None
 	created_at: datetime
+
+
+class BookingStatusUpdate(BaseModel):
+	status: BookingStatus
+
+
+class BookingArchiveUpdate(BaseModel):
+	archived: bool
