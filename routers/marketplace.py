@@ -64,6 +64,7 @@ def _service_summary(
 	*,
 	provider_name: str | None = None,
 	provider_phone: str | None = None,
+	provider_avatar_url: str | None = None,
 ) -> dict[str, Any]:
 	price_min = int(service.get("price_min") or 0)
 	price_max = int(service.get("price_max") or 0)
@@ -75,6 +76,7 @@ def _service_summary(
 		"user_id": service["user_id"],
 		"provider_name": provider_name,
 		"provider_phone": provider_phone,
+		"avatar_url": provider_avatar_url,
 		"title": service["title"],
 		"category": service["category"],
 		"description": service["description"],
@@ -92,10 +94,11 @@ def _service_summary(
 def _get_provider_meta(user_id: str) -> dict[str, str | None]:
 	provider = fetch_row(USERS_TABLE, filters={"id": user_id})
 	if provider is None:
-		return {"name": None, "phone": None}
+		return {"name": None, "phone": None, "avatar_url": None}
 	return {
 		"name": provider.get("full_name"),
 		"phone": provider.get("phone"),
+		"avatar_url": provider.get("avatar_url"),
 	}
 
 
@@ -154,6 +157,14 @@ def _is_missing_archive_column_error(exc: Exception) -> bool:
 	code = str(getattr(exc, "code", "") or "")
 	message = str(getattr(exc, "message", "") or exc)
 	return code == "PGRST204" and "archived_by_provider" in message
+
+
+def _is_missing_reviewer_user_id_column_error(exc: Exception) -> bool:
+	if not isinstance(exc, APIError):
+		return False
+	code = str(getattr(exc, "code", "") or "")
+	message = str(getattr(exc, "message", "") or exc)
+	return code == "PGRST204" and "reviewer_user_id" in message
 
 
 def _update_booking_archive_flag(booking: dict[str, Any], archived: bool) -> dict[str, Any] | None:
@@ -230,6 +241,7 @@ def list_services(
 				service,
 				provider_name=provider_meta["name"],
 				provider_phone=provider_meta["phone"],
+				provider_avatar_url=provider_meta["avatar_url"],
 			)
 		)
 
@@ -240,7 +252,7 @@ def list_services(
 def list_my_services(authorization: Annotated[str | None, Header()] = None) -> list[dict[str, Any]]:
 	_require_db()
 	user_id = _require_user_id(authorization)
-	services = fetch_rows(SERVICES_TABLE, filters={"user_id": user_id}, limit=1000)
+	services = fetch_rows(SERVICES_TABLE, filters={"user_id": user_id, "is_active": True}, limit=1000)
 	provider_meta = _get_provider_meta(user_id)
 
 	return [
@@ -248,6 +260,7 @@ def list_my_services(authorization: Annotated[str | None, Header()] = None) -> l
 			service,
 			provider_name=provider_meta["name"],
 			provider_phone=provider_meta["phone"],
+			provider_avatar_url=provider_meta["avatar_url"],
 		)
 		for service in sorted(services, key=lambda item: item.get("created_at") or "", reverse=True)
 	]
@@ -287,6 +300,7 @@ def create_service(
 		created,
 		provider_name=provider_meta["name"],
 		provider_phone=provider_meta["phone"],
+		provider_avatar_url=provider_meta["avatar_url"],
 	)
 
 
@@ -305,6 +319,7 @@ def get_service(service_id: str) -> dict[str, Any]:
 			service,
 			provider_name=provider_meta["name"],
 			provider_phone=provider_meta["phone"],
+			provider_avatar_url=provider_meta["avatar_url"],
 		),
 		"reviews": reviews_sorted,
 	}
@@ -340,6 +355,7 @@ def update_service(
 		updated[0],
 		provider_name=provider_meta["name"],
 		provider_phone=provider_meta["phone"],
+		provider_avatar_url=provider_meta["avatar_url"],
 	)
 
 
@@ -377,7 +393,19 @@ def submit_review(
 		"comment": payload.comment,
 		"created_at": _now_iso(),
 	}
-	stored_review = insert_row(REVIEWS_TABLE, review)
+	try:
+		stored_review = insert_row(REVIEWS_TABLE, review)
+	except Exception as exc:  # noqa: BLE001
+		if not _is_missing_reviewer_user_id_column_error(exc):
+			raise
+		stored_review = insert_row(
+			REVIEWS_TABLE,
+			{
+				key: value
+				for key, value in review.items()
+				if key != "reviewer_user_id"
+			},
+		)
 	if stored_review is None:
 		raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to save review")
 	_refresh_service_rating(service_id)

@@ -10,6 +10,7 @@ class UserBase(BaseModel):
 	email: EmailStr
 	phone: str | None = None
 	location: str | None = None
+	monthly_goal: int = Field(default=5000, ge=1000, le=1_000_000)
 	bio: str | None = Field(default=None, max_length=500)
 	avatar_url: str | None = None
 	services: list[str] = Field(default_factory=list)
@@ -40,6 +41,7 @@ class UserUpdate(BaseModel):
 	full_name: str | None = Field(default=None, min_length=1, max_length=120)
 	phone: str | None = None
 	location: str | None = None
+	monthly_goal: int | None = Field(default=None, ge=1000, le=1_000_000)
 	bio: str | None = Field(default=None, max_length=500)
 	avatar_url: str | None = None
 	services: list[str] | None = None

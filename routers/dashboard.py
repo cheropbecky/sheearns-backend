@@ -7,13 +7,15 @@ from fastapi import APIRouter, Header, HTTPException, status
 
 from models.income import IncomeSummary, Milestone
 from services.auth_service import verify_token
-from services.supabase_service import fetch_rows, get_supabase_client
+from services.supabase_service import fetch_row, fetch_rows, get_supabase_client
 
 
 router = APIRouter()
 
 BOOKINGS_TABLE = "bookings"
 SERVICES_TABLE = "services"
+USERS_TABLE = "users"
+DEFAULT_MONTHLY_GOAL = 5000
 
 
 def _require_db() -> None:
@@ -31,7 +33,7 @@ def _require_user_id(authorization: str | None) -> str:
 		raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
 
-def _income_summary(total: int, jobs_count: int, monthly_goal: int = 10000) -> IncomeSummary:
+def _income_summary(total: int, jobs_count: int, monthly_goal: int = DEFAULT_MONTHLY_GOAL) -> IncomeSummary:
 	remaining = max(monthly_goal - total, 0)
 	progress = round((total / monthly_goal) * 100, 2) if monthly_goal > 0 else 0
 
@@ -44,12 +46,29 @@ def _income_summary(total: int, jobs_count: int, monthly_goal: int = 10000) -> I
 	)
 
 
-def _milestones(earned: int, jobs_count: int) -> list[Milestone]:
+def _resolve_monthly_goal(user_id: str) -> int:
+	user_row = fetch_row(USERS_TABLE, filters={"id": user_id}) or {}
+	resolved_goal = int(user_row.get("monthly_goal") or DEFAULT_MONTHLY_GOAL)
+	return resolved_goal if resolved_goal > 0 else DEFAULT_MONTHLY_GOAL
+
+
+def _milestones(earned: int, jobs_count: int, monthly_goal: int) -> list[Milestone]:
+	half_goal = max(int(monthly_goal * 0.5), 1000)
 
 	return [
 		Milestone(key="first_client", label="First Client Landed", unlocked=jobs_count >= 1, target="1 job"),
-		Milestone(key="earned_5k", label="Ksh 5,000 Earned", unlocked=earned >= 5000, target="Ksh 5,000"),
-		Milestone(key="earned_10k", label="Ksh 10,000 Month", unlocked=earned >= 10000, target="Ksh 10,000"),
+		Milestone(
+			key="earned_half_goal",
+			label=f"Ksh {half_goal:,} Earned",
+			unlocked=earned >= half_goal,
+			target=f"Ksh {half_goal:,}",
+		),
+		Milestone(
+			key="earned_month_goal",
+			label=f"Ksh {monthly_goal:,} Month",
+			unlocked=earned >= monthly_goal,
+			target=f"Ksh {monthly_goal:,}",
+		),
 		Milestone(key="ten_clients", label="10 Clients Served", unlocked=jobs_count >= 10, target="10 jobs"),
 	]
 
@@ -66,8 +85,9 @@ def get_dashboard(authorization: Annotated[str | None, Header()] = None) -> dict
 	earnings_records = [booking for booking in provider_bookings if str(booking.get("status", "")).lower() in completed_statuses]
 	total_earned = sum(int(item.get("amount") or 0) for item in earnings_records)
 	jobs_count = len(provider_bookings)
-	summary = _income_summary(total_earned, jobs_count)
-	milestones = _milestones(total_earned, jobs_count)
+	monthly_goal = _resolve_monthly_goal(user_id)
+	summary = _income_summary(total_earned, jobs_count, monthly_goal)
+	milestones = _milestones(total_earned, jobs_count, monthly_goal)
 
 	services = fetch_rows(SERVICES_TABLE, filters={"user_id": user_id, "is_active": True}, limit=1000)
 	service_map = {item["id"]: item for item in services}

@@ -17,10 +17,16 @@ from models.user import (
 from services.auth_service import create_token, hash_password, verify_password, verify_token
 from services.supabase_service import fetch_row, fetch_rows, get_supabase_client, insert_row, update_rows
 
+try:
+	from postgrest.exceptions import APIError
+except Exception:  # noqa: BLE001
+	APIError = Exception
+
 
 router = APIRouter()
 
 USER_TABLE = "users"
+DEFAULT_MONTHLY_GOAL = 5000
 
 
 _users_by_email: dict[str, dict[str, Any]] = {}
@@ -34,6 +40,7 @@ def _public_user(user: dict[str, Any]) -> UserPublic:
 		email=user["email"],
 		phone=user.get("phone"),
 		location=user.get("location"),
+		monthly_goal=int(user.get("monthly_goal") or DEFAULT_MONTHLY_GOAL),
 		bio=user.get("bio"),
 		avatar_url=user.get("avatar_url"),
 		services=user.get("services", []),
@@ -59,6 +66,7 @@ def _normalize_user_record(user: dict[str, Any]) -> dict[str, Any]:
 		"password_hash": user["password_hash"],
 		"phone": user.get("phone"),
 		"location": user.get("location"),
+		"monthly_goal": int(user.get("monthly_goal") or DEFAULT_MONTHLY_GOAL),
 		"bio": user.get("bio"),
 		"avatar_url": user.get("avatar_url"),
 		"services": _normalize_services(user.get("services")),
@@ -71,6 +79,20 @@ def _normalize_user_record(user: dict[str, Any]) -> dict[str, Any]:
 
 def _using_database() -> bool:
 	return get_supabase_client() is not None
+
+
+def _is_missing_monthly_goal_column_error(exc: Exception) -> bool:
+	if not isinstance(exc, APIError):
+		return False
+	code = str(getattr(exc, "code", "") or "")
+	message = str(getattr(exc, "message", "") or exc)
+	return code == "PGRST204" and "monthly_goal" in message
+
+
+def _without_monthly_goal(payload: dict[str, Any]) -> dict[str, Any]:
+	trimmed = dict(payload)
+	trimmed.pop("monthly_goal", None)
+	return trimmed
 
 
 def _get_user_by_email(email: str) -> dict[str, Any] | None:
@@ -110,7 +132,12 @@ def _get_user_by_token(token: str | None) -> dict[str, Any]:
 
 def _save_user_record(user: dict[str, Any]) -> dict[str, Any]:
 	if _using_database():
-		stored = insert_row(USER_TABLE, user)
+		try:
+			stored = insert_row(USER_TABLE, user)
+		except Exception as exc:  # noqa: BLE001
+			if not _is_missing_monthly_goal_column_error(exc):
+				raise
+			stored = insert_row(USER_TABLE, _without_monthly_goal(user))
 		if stored is None:
 			raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to save user")
 		return stored
@@ -122,7 +149,12 @@ def _save_user_record(user: dict[str, Any]) -> dict[str, Any]:
 
 def _update_user_record(user: dict[str, Any]) -> dict[str, Any]:
 	if _using_database():
-		updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=user)
+		try:
+			updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=user)
+		except Exception as exc:  # noqa: BLE001
+			if not _is_missing_monthly_goal_column_error(exc):
+				raise
+			updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=_without_monthly_goal(user))
 		if not updated:
 			raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to update user")
 		return updated[0]
@@ -149,6 +181,7 @@ def register_user(payload: UserCreate) -> LoginResponse:
 		"password_hash": password_hash,
 		"phone": payload.phone,
 		"location": payload.location,
+		"monthly_goal": DEFAULT_MONTHLY_GOAL,
 		"bio": None,
 		"avatar_url": None,
 		"services": [],
@@ -203,6 +236,8 @@ def update_current_user(payload: UserUpdate, authorization: Annotated[str | None
 		user["phone"] = payload.phone
 	if payload.location is not None:
 		user["location"] = payload.location
+	if payload.monthly_goal is not None:
+		user["monthly_goal"] = payload.monthly_goal
 	if payload.bio is not None:
 		user["bio"] = payload.bio
 	if payload.avatar_url is not None:
