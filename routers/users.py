@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated
 from typing import Any
 from uuid import uuid4
@@ -27,6 +28,7 @@ router = APIRouter()
 
 USER_TABLE = "users"
 DEFAULT_MONTHLY_GOAL = 5000
+_REQUIRED_USER_FIELDS = {"id", "full_name", "email", "password_hash"}
 
 
 _users_by_email: dict[str, dict[str, Any]] = {}
@@ -77,6 +79,12 @@ def _normalize_user_record(user: dict[str, Any]) -> dict[str, Any]:
 	}
 
 
+def _db_user_payload(user: dict[str, Any]) -> dict[str, Any]:
+	payload = dict(user)
+	payload.pop("token", None)
+	return payload
+
+
 def _using_database() -> bool:
 	return get_supabase_client() is not None
 
@@ -89,9 +97,33 @@ def _is_missing_monthly_goal_column_error(exc: Exception) -> bool:
 	return code == "PGRST204" and "monthly_goal" in message
 
 
+def _missing_column_name(exc: Exception) -> str | None:
+	if not isinstance(exc, APIError):
+		return None
+	code = str(getattr(exc, "code", "") or "")
+	message = str(getattr(exc, "message", "") or exc)
+	if code != "PGRST204":
+		return None
+	match = re.search(r"column '([^']+)'", message)
+	if match:
+		return match.group(1)
+	match = re.search(r"'([^']+)' column", message)
+	if match:
+		return match.group(1)
+	return None
+
+
 def _without_monthly_goal(payload: dict[str, Any]) -> dict[str, Any]:
 	trimmed = dict(payload)
 	trimmed.pop("monthly_goal", None)
+	return trimmed
+
+
+def _without_optional_user_column(payload: dict[str, Any], column_name: str | None) -> dict[str, Any]:
+	if not column_name:
+		return payload
+	trimmed = dict(payload)
+	trimmed.pop(column_name, None)
 	return trimmed
 
 
@@ -113,11 +145,6 @@ def _get_user_by_token(token: str | None) -> dict[str, Any]:
 
 	token = token.replace("Bearer ", "", 1)
 
-	if _using_database():
-		user = fetch_row(USER_TABLE, filters={"token": token})
-		if user is not None:
-			return user
-
 	try:
 		user_id = verify_token(token)
 	except Exception as exc:  # noqa: BLE001
@@ -132,12 +159,14 @@ def _get_user_by_token(token: str | None) -> dict[str, Any]:
 
 def _save_user_record(user: dict[str, Any]) -> dict[str, Any]:
 	if _using_database():
+		payload = _db_user_payload(user)
 		try:
-			stored = insert_row(USER_TABLE, user)
+			stored = insert_row(USER_TABLE, payload)
 		except Exception as exc:  # noqa: BLE001
-			if not _is_missing_monthly_goal_column_error(exc):
+			column_name = _missing_column_name(exc)
+			if column_name in _REQUIRED_USER_FIELDS or column_name is None:
 				raise
-			stored = insert_row(USER_TABLE, _without_monthly_goal(user))
+			stored = insert_row(USER_TABLE, _without_optional_user_column(payload, column_name))
 		if stored is None:
 			raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to save user")
 		return stored
@@ -149,12 +178,14 @@ def _save_user_record(user: dict[str, Any]) -> dict[str, Any]:
 
 def _update_user_record(user: dict[str, Any]) -> dict[str, Any]:
 	if _using_database():
+		payload = _db_user_payload(user)
 		try:
-			updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=user)
+			updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=payload)
 		except Exception as exc:  # noqa: BLE001
-			if not _is_missing_monthly_goal_column_error(exc):
+			column_name = _missing_column_name(exc)
+			if column_name in _REQUIRED_USER_FIELDS or column_name is None:
 				raise
-			updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=_without_monthly_goal(user))
+			updated = update_rows(USER_TABLE, filters={"id": user["id"]}, payload=_without_optional_user_column(payload, column_name))
 		if not updated:
 			raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to update user")
 		return updated[0]
@@ -164,6 +195,7 @@ def _update_user_record(user: dict[str, Any]) -> dict[str, Any]:
 	return user
 
 
+@router.post("/signup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 def register_user(payload: UserCreate) -> LoginResponse:
 	email = str(payload.email).lower()
@@ -197,18 +229,18 @@ def register_user(payload: UserCreate) -> LoginResponse:
 
 
 @router.post("/login", response_model=LoginResponse)
+@router.post("/signin", response_model=LoginResponse)
 def login_user(payload: UserLogin) -> LoginResponse:
 	user = _get_user_by_email(str(payload.email).lower())
 	if not user or not verify_password(payload.password, user["password_hash"]):
 		raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
 	token = create_token(user["id"])
-	user["token"] = token
-	updated_user = _update_user_record(user)
-	return LoginResponse(access_token=token, user=_public_user(updated_user))
+	return LoginResponse(access_token=token, user=_public_user(user))
 
 
 @router.get("/me", response_model=UserPublic)
+@router.get("/current", response_model=UserPublic)
 def get_current_user(authorization: Annotated[str | None, Header()] = None) -> UserPublic:
 	user = _get_user_by_token(authorization)
 	return _public_user(user)
@@ -220,7 +252,7 @@ def update_current_user(payload: UserUpdate, authorization: Annotated[str | None
 
 	if payload.email is not None:
 		next_email = str(payload.email).lower()
-		existing = _users_by_email.get(next_email)
+		existing = _get_user_by_email(next_email)
 		if existing is not None and existing["id"] != user["id"]:
 			raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already in use")
 

@@ -20,7 +20,7 @@ app = FastAPI(title="SheEarns API", version="1.0.0")
 app.add_middleware(
 	CORSMiddleware,
 	allow_origins=_split_origins(os.getenv("ALLOWED_ORIGINS")),
-	allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+	allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$|https://.*\.vercel\.app$",
 	allow_credentials=True,
 	allow_methods=["*"],
 	allow_headers=["*"],
@@ -35,6 +35,7 @@ def _register_router(module_path: str, prefix: str, tags: list[str]) -> None:
 
 
 _register_router("routers.ai", "/ai", ["AI"])
+_register_router("routers.users", "/auth", ["Auth"])
 _register_router("routers.users", "/users", ["Users"])
 _register_router("routers.marketplace", "/services", ["Marketplace"])
 _register_router("routers.dashboard", "/dashboard", ["Dashboard"])
