@@ -28,6 +28,7 @@ BOOKINGS_TABLE = "bookings"
 USERS_TABLE = "users"
 ALLOWED_BOOKING_STATUSES = {"pending", "accepted", "rejected", "completed", "cancelled"}
 ARCHIVE_MARKER = "[[__SHEEARNS_ARCHIVED_BY_PROVIDER__]]"
+DEFAULT_APPROVAL_STATUS = "pending"
 
 def _now_iso() -> str:
 	return datetime.now(timezone.utc).isoformat()
@@ -87,8 +88,14 @@ def _service_summary(
 		"rating": round(rating, 1),
 		"review_count": review_count,
 		"is_active": bool(service.get("is_active", True)),
+		"approval_status": str(service.get("approval_status") or DEFAULT_APPROVAL_STATUS),
 		"created_at": service.get("created_at"),
 	}
+
+
+def _is_visible_service(service: dict[str, Any]) -> bool:
+	approval_status = str(service.get("approval_status") or "approved").lower()
+	return bool(service.get("is_active", True)) and approval_status == "approved"
 
 
 def _get_provider_meta(user_id: str) -> dict[str, str | None]:
@@ -167,6 +174,28 @@ def _is_missing_reviewer_user_id_column_error(exc: Exception) -> bool:
 	return code == "PGRST204" and "reviewer_user_id" in message
 
 
+def _is_missing_approval_status_column_error(exc: Exception) -> bool:
+	if not isinstance(exc, APIError):
+		return False
+	code = str(getattr(exc, "code", "") or "")
+	message = str(getattr(exc, "message", "") or exc)
+	return code == "PGRST204" and "approval_status" in message
+
+
+def _deactivate_service(service_id: str) -> bool:
+	try:
+		updated = update_rows(
+			SERVICES_TABLE,
+			filters={"id": service_id},
+			payload={"is_active": False, "approval_status": "rejected"},
+		)
+	except Exception as exc:  # noqa: BLE001
+		if not _is_missing_approval_status_column_error(exc):
+			return False
+		updated = update_rows(SERVICES_TABLE, filters={"id": service_id}, payload={"is_active": False})
+	return bool(updated)
+
+
 def _update_booking_archive_flag(booking: dict[str, Any], archived: bool) -> dict[str, Any] | None:
 	try:
 		updated = update_rows(
@@ -208,7 +237,7 @@ def list_services(
 	q: str | None = Query(default=None, max_length=120),
 ) -> list[dict[str, Any]]:
 	_require_db()
-	services = fetch_rows(SERVICES_TABLE, filters={"is_active": True}, limit=1000)
+	services = [service for service in fetch_rows(SERVICES_TABLE, limit=1000) if _is_visible_service(service)]
 
 	if category and category != "All":
 		services = [service for service in services if service["category"] == category]
@@ -290,6 +319,7 @@ def create_service(
 		"rating": 0.0,
 		"review_count": 0,
 		"is_active": True,
+		"approval_status": DEFAULT_APPROVAL_STATUS,
 		"created_at": _now_iso(),
 	}
 	created = insert_row(SERVICES_TABLE, service)
@@ -308,7 +338,7 @@ def create_service(
 def get_service(service_id: str) -> dict[str, Any]:
 	_require_db()
 	service = fetch_row(SERVICES_TABLE, filters={"id": service_id, "is_active": True})
-	if not service:
+	if not service or not _is_visible_service(service):
 		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
 	reviews = fetch_rows(REVIEWS_TABLE, filters={"service_id": service_id}, limit=500)
 	reviews_sorted = sorted(reviews, key=lambda item: item.get("created_at") or "", reverse=True)
@@ -369,7 +399,16 @@ def delete_service(service_id: str, authorization: Annotated[str | None, Header(
 	if service["user_id"] != actor_user_id:
 		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only delete your own service")
 
-	update_rows(SERVICES_TABLE, filters={"id": service_id}, payload={"is_active": False})
+	try:
+		deleted = delete_rows(SERVICES_TABLE, filters={"id": service_id})
+	except Exception:  # noqa: BLE001
+		deleted = []
+
+	if deleted:
+		return
+
+	if not _deactivate_service(service_id):
+		raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to delete service")
 
 
 @router.post("/{service_id}/review", status_code=status.HTTP_201_CREATED)

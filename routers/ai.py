@@ -1,9 +1,12 @@
 import json
+from typing import Annotated
 from typing import Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header
 from pydantic import BaseModel, Field
 
+from services.admin_service import record_ai_conversation
+from services.auth_service import verify_token
 from services.openai_service import generate_chat_reply
 from services.pricing_service import calculate_pricing
 
@@ -132,7 +135,7 @@ def _history_to_prompt(history: list[ChatTurn]) -> str:
 
 
 @router.post("/coach")
-async def ai_coach(payload: CoachRequest) -> dict[str, Any]:
+async def ai_coach(payload: CoachRequest, authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
 	prompt = _history_to_prompt(payload.history)
 	system_hint = (
 		"You are helping a young African woman build income from her skills. "
@@ -147,6 +150,13 @@ async def ai_coach(payload: CoachRequest) -> dict[str, Any]:
 		history=history,
 		system_prompt=system_hint,
 	)
+	user_id = None
+	if authorization:
+		try:
+			user_id = verify_token(authorization.replace("Bearer ", "", 1))
+		except Exception:  # noqa: BLE001
+			user_id = None
+	record_ai_conversation(user_id=user_id, question=payload.text, response_source=str(result.get("source", "fallback")))
 	return {"reply": result.get("reply", ""), "source": result.get("source", "fallback")}
 
 

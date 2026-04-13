@@ -30,6 +30,10 @@ class ServiceUpdate(BaseModel):
 	is_active: bool | None = None
 
 
+class ServiceApprovalUpdate(BaseModel):
+	approval_status: str = Field(..., pattern="^(approved|rejected|pending)$")
+
+
 class ServicePublic(ServiceBase):
 	id: str
 	user_id: str

@@ -16,6 +16,9 @@ class UserBase(BaseModel):
 	services: list[str] = Field(default_factory=list)
 	notifications_enabled: bool = True
 	marketing_emails_enabled: bool = False
+	is_admin: bool = False
+	is_suspended: bool = False
+	is_deleted: bool = False
 
 
 class UserCreate(BaseModel):
@@ -52,6 +55,8 @@ class UserUpdate(BaseModel):
 class UserPublic(UserBase):
 	id: str
 	is_premium: bool = False
+	created_at: datetime | None = None
+	updated_at: datetime | None = None
 
 
 class UserInDB(UserPublic):

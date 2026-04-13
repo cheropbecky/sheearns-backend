@@ -155,3 +155,30 @@ def send_booking_notifications(
 			)
 		except Exception:  # noqa: BLE001
 			logger.exception("Failed to send booking alert email to provider")
+
+
+def send_announcement_notifications(*, users: list[dict[str, Any]], title: str, body: str) -> None:
+	if not is_email_notifications_configured():
+		logger.info("Skipping announcement emails: SMTP and Resend are both not configured")
+		return
+
+	for user in users:
+		if not _notifications_enabled(user):
+			continue
+		email = str(user.get("email") or "").strip()
+		if not email:
+			continue
+		name = str(user.get("full_name") or "there")
+		html = (
+			f"<h2>{title}</h2>"
+			f"<p>Hi {name},</p>"
+			f"<p>{body}</p>"
+		)
+		try:
+			_send_email(
+				to_email=email,
+				subject=title,
+				html=html,
+			)
+		except Exception:  # noqa: BLE001
+			logger.exception("Failed to send announcement email to %s", email)

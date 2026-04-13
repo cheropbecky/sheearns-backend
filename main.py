@@ -35,6 +35,7 @@ def _register_router(module_path: str, prefix: str, tags: list[str]) -> None:
 
 
 _register_router("routers.ai", "/ai", ["AI"])
+_register_router("routers.admin", "/admin", ["Admin"])
 _register_router("routers.users", "/auth", ["Auth"])
 _register_router("routers.users", "/users", ["Users"])
 _register_router("routers.marketplace", "/services", ["Marketplace"])

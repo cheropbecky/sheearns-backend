@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+from datetime import datetime, timezone
 from typing import Annotated
 from typing import Any
 from uuid import uuid4
@@ -48,7 +50,12 @@ def _public_user(user: dict[str, Any]) -> UserPublic:
 		services=user.get("services", []),
 		notifications_enabled=user.get("notifications_enabled", True),
 		marketing_emails_enabled=user.get("marketing_emails_enabled", False),
+		is_admin=bool(user.get("is_admin", False) or _is_admin_email(user.get("email"))),
+		is_suspended=bool(user.get("is_suspended", False)),
+		is_deleted=bool(user.get("is_deleted", False)),
 		is_premium=user.get("is_premium", False),
+		created_at=user.get("created_at"),
+		updated_at=user.get("updated_at"),
 	)
 
 
@@ -74,8 +81,13 @@ def _normalize_user_record(user: dict[str, Any]) -> dict[str, Any]:
 		"services": _normalize_services(user.get("services")),
 		"notifications_enabled": user.get("notifications_enabled", True),
 		"marketing_emails_enabled": user.get("marketing_emails_enabled", False),
+		"is_admin": bool(user.get("is_admin", False) or _is_admin_email(user.get("email"))),
+		"is_suspended": bool(user.get("is_suspended", False)),
+		"is_deleted": bool(user.get("is_deleted", False)),
 		"is_premium": user.get("is_premium", False),
 		"token": user.get("token"),
+		"created_at": user.get("created_at"),
+		"updated_at": user.get("updated_at"),
 	}
 
 
@@ -83,6 +95,25 @@ def _db_user_payload(user: dict[str, Any]) -> dict[str, Any]:
 	payload = dict(user)
 	payload.pop("token", None)
 	return payload
+
+
+def _now_iso() -> str:
+	return datetime.now(timezone.utc).isoformat()
+
+
+def _admin_emails() -> set[str]:
+	raw = os.getenv("ADMIN_EMAILS", "")
+	return {email.strip().lower() for email in raw.split(",") if email.strip()}
+
+
+def _is_admin_email(email: str | None) -> bool:
+	if not email:
+		return False
+	return str(email).lower() in _admin_emails()
+
+
+def _is_blocked_user(user: dict[str, Any]) -> bool:
+	return bool(user.get("is_deleted", False) or user.get("is_suspended", False))
 
 
 def _using_database() -> bool:
@@ -152,12 +183,16 @@ def _get_user_by_token(token: str | None) -> dict[str, Any]:
 
 	user = _get_user_by_id(user_id)
 	if user is not None:
+		if _is_blocked_user(user):
+			raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is suspended or deleted")
 		return user
 
 	raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found for token")
 
 
 def _save_user_record(user: dict[str, Any]) -> dict[str, Any]:
+	user["updated_at"] = _now_iso()
+	user.setdefault("created_at", user["updated_at"])
 	if _using_database():
 		payload = _db_user_payload(user)
 		try:
@@ -177,6 +212,7 @@ def _save_user_record(user: dict[str, Any]) -> dict[str, Any]:
 
 
 def _update_user_record(user: dict[str, Any]) -> dict[str, Any]:
+	user["updated_at"] = _now_iso()
 	if _using_database():
 		payload = _db_user_payload(user)
 		try:
@@ -219,8 +255,13 @@ def register_user(payload: UserCreate) -> LoginResponse:
 		"services": [],
 		"notifications_enabled": True,
 		"marketing_emails_enabled": False,
+		"is_admin": _is_admin_email(email),
+		"is_suspended": False,
+		"is_deleted": False,
 		"is_premium": False,
 		"token": token,
+		"created_at": _now_iso(),
+		"updated_at": _now_iso(),
 	}
 
 	stored_user = _save_user_record(user_record)
@@ -234,6 +275,8 @@ def login_user(payload: UserLogin) -> LoginResponse:
 	user = _get_user_by_email(str(payload.email).lower())
 	if not user or not verify_password(payload.password, user["password_hash"]):
 		raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+	if _is_blocked_user(user):
+		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is suspended or deleted")
 
 	token = create_token(user["id"])
 	return LoginResponse(access_token=token, user=_public_user(user))
@@ -314,6 +357,8 @@ def change_current_user_password(
 def get_public_profile(user_id: str) -> UserPublic:
 	user = _get_user_by_id(user_id)
 	if not user:
+		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+	if _is_blocked_user(user):
 		raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
 	return _public_user(user)
