@@ -528,7 +528,7 @@ def create_booking(
 
 	provider_user_id = service["user_id"]
 	if provider_user_id == customer_user_id:
-		raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot book your own service")
+		raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot book your own service")
 
 	booking = {
 		"id": str(uuid4()),

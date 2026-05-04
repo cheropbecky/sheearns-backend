@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, status
 
 from models.income import IncomeSummary, Milestone
+from services.admin_service import list_announcements
 from services.auth_service import verify_token
 from services.supabase_service import fetch_row, fetch_rows, get_supabase_client
 
@@ -71,6 +72,16 @@ def _milestones(earned: int, jobs_count: int, monthly_goal: int) -> list[Milesto
 		),
 		Milestone(key="ten_clients", label="10 Clients Served", unlocked=jobs_count >= 10, target="10 jobs"),
 	]
+
+
+@router.get("/announcements")
+def get_announcements(authorization: Annotated[str | None, Header()] = None) -> dict[str, list[dict[str, Any]]]:
+	_require_db()
+	_require_user_id(authorization)
+	visible_channels = {"dashboard", "all", "global"}
+	filtered = [item for item in list_announcements() if str(item.get("channel") or "dashboard").lower() in visible_channels]
+	announcements = sorted(filtered, key=lambda item: item.get("created_at") or "", reverse=True)
+	return {"announcements": announcements[:30]}
 
 
 @router.get("")
